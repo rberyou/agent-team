@@ -39,7 +39,7 @@ File System Persistence (.agent-team/projects/{id}/)
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Configure environment
 cp .env.example .env   # then edit LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
