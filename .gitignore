@@ -3,3 +3,4 @@ dist/
 .agent-team/
 *.js.map
 .env
+.DS_Store
