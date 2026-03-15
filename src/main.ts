@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { createContainer } from './container.js';
 import { createChildLogger } from './logger.js';
 
