@@ -686,14 +686,27 @@ async function refreshProject() {
   document.getElementById('hasProject').classList.add('visible');
 
   // Fetch project, tasks, artifacts in parallel
-  const [projData, taskData] = await Promise.all([
+  const [projData, taskData, confirmData] = await Promise.all([
     apiGet('/api/projects/' + currentProjectId),
     apiGet('/api/projects/' + currentProjectId + '/tasks'),
+    apiGet('/api/projects/' + currentProjectId + '/pending-confirmation'),
   ]);
 
   if (!projData.project) return;
   const project = projData.project;
   const tasks = taskData.tasks || [];
+
+  // Update pending confirmation from server
+  if (confirmData.pendingConfirmation) {
+    pendingConfirmation = {
+      confirmationType: confirmData.pendingConfirmation.payload.confirmationType,
+      taskId: confirmData.pendingConfirmation.payload.taskId,
+    };
+    showActionPanel();
+  } else {
+    pendingConfirmation = null;
+    hideActionPanel();
+  }
 
   // Update phase bar
   updatePhaseBar(project);

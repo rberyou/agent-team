@@ -6,7 +6,7 @@ import { createChildLogger } from '../logger.js';
 import type { EventBus } from '../core/event-bus/index.js';
 import type { ProjectService } from '../services/project-service.js';
 import type { TaskService } from '../services/task-service.js';
-import type { ArtifactStore } from '../core/persistence/index.js';
+import type { ArtifactStore, EventStore } from '../core/persistence/index.js';
 import { EventType, EventSource } from '../core/models/index.js';
 import { getDashboardHtml } from './dashboard.js';
 
@@ -17,6 +17,7 @@ export interface AppDependencies {
   projectService: ProjectService;
   taskService: TaskService;
   artifactStore: ArtifactStore;
+  eventStore: EventStore;
   dataDir: string;
 }
 
@@ -32,7 +33,7 @@ export async function createApp(deps: AppDependencies) {
   interface WsClient { send(data: string): void; readyState: number }
   const clients = new Set<WsClient>();
 
-  const { eventBus, projectService, taskService, artifactStore, dataDir } = deps;
+  const { eventBus, projectService, taskService, artifactStore, eventStore, dataDir } = deps;
 
   // Broadcast all events to connected WebSocket clients
   eventBus.subscribe('*', (event) => {
@@ -115,6 +116,15 @@ export async function createApp(deps: AppDependencies) {
       return reply.status(404).send({ error: 'Project not found' });
     }
     return { project };
+  });
+
+  // GET /api/projects/:projectId/pending-confirmation - Get pending confirmation
+  app.get<{
+    Params: { projectId: string };
+  }>('/api/projects/:projectId/pending-confirmation', async (request, _reply) => {
+    const { projectId } = request.params;
+    const confirmation = await eventStore.getPendingConfirmation(projectId);
+    return { pendingConfirmation: confirmation };
   });
 
   // --- Tasks ---

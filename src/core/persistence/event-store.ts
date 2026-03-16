@@ -53,4 +53,31 @@ export class EventStore {
     const filePath = join(this.eventsDir(projectId), `${date}.jsonl`);
     return this.fileStore.readJSONL<Event>(filePath);
   }
+
+  /**
+   * Get the latest pending confirmation for a project.
+   * Returns the last user.confirmation_needed event that hasn't been
+   * followed by a user.confirmed or user.rejected event.
+   */
+  async getPendingConfirmation(projectId: string): Promise<Event | null> {
+    const events = await this.readAll(projectId);
+
+    let lastConfirmationNeeded: Event | null = null;
+
+    for (const event of events) {
+      if (event.type === 'user.confirmation_needed') {
+        lastConfirmationNeeded = event;
+      } else if (event.type === 'user.confirmed' || event.type === 'user.rejected') {
+        if (lastConfirmationNeeded) {
+          const confType = lastConfirmationNeeded.payload?.confirmationType;
+          const newType = event.payload?.confirmationType;
+          if (confType === newType) {
+            lastConfirmationNeeded = null;
+          }
+        }
+      }
+    }
+
+    return lastConfirmationNeeded;
+  }
 }

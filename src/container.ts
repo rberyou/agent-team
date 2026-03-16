@@ -78,7 +78,7 @@ export async function createContainer() {
   const devOpsAgent = new DevOpsAgent(eventBus, taskService, artifactStore, llmService, config.port);
 
   // API server
-  const app = await createApp({ eventBus, projectService, taskService, artifactStore, dataDir: config.dataDir });
+  const app = await createApp({ eventBus, projectService, taskService, artifactStore, eventStore, dataDir: config.dataDir });
 
   return {
     eventBus,
