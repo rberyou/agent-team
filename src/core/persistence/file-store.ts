@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, appendFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, appendFile, readdir, stat, rm } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 
 /**
@@ -119,6 +119,19 @@ export class FileStore {
         return [];
       }
       throw err;
+    }
+  }
+
+  /**
+   * Delete a file or directory (recursively).
+   */
+  async delete(path: string): Promise<void> {
+    try {
+      await rm(path, { recursive: true, force: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err;
+      }
     }
   }
 }

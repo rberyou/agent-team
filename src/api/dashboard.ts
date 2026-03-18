@@ -644,7 +644,8 @@ function connectWS() {
     scheduleReconnect();
   };
 
-  ws.onerror = () => {
+  ws.onerror = (e) => {
+    console.error('WebSocket error:', e);
     ws.close();
   };
 }
@@ -709,6 +710,13 @@ async function apiPost(path, body) {
   return res.json();
 }
 
+async function apiDelete(path) {
+  const res = await fetch(API + path, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
 // ---- Create project ----
 async function createProject() {
   const requirement = document.getElementById('requirement').value.trim();
@@ -724,6 +732,7 @@ async function createProject() {
     const data = await apiPost('/api/projects', { requirement, projectName: projectName || undefined, requiresUI });
     if (data.project) {
       currentProjectId = data.project.projectId;
+      localStorage.setItem('currentProjectId', currentProjectId);
       document.getElementById('requirement').value = '';
       document.getElementById('projectName').value = '';
       refreshProject();
@@ -733,6 +742,21 @@ async function createProject() {
     btn.disabled = false;
     btn.textContent = 'Submit Requirement';
   }
+}
+
+// ---- Delete project ----
+async function deleteProject(id) {
+  if (!confirm('Are you sure you want to delete this project? This action cannot be undone.')) {
+    return;
+  }
+  await apiDelete('/api/projects/' + id);
+  if (currentProjectId === id) {
+    currentProjectId = null;
+    localStorage.removeItem('currentProjectId');
+    document.getElementById('noProject').classList.add('visible');
+    document.getElementById('hasProject').classList.remove('visible');
+  }
+  loadProjects();
 }
 
 // ---- Load projects list ----
@@ -748,13 +772,60 @@ async function loadProjects() {
     return '<div style="padding:8px 10px;border-radius:6px;cursor:pointer;margin-bottom:4px;'
       + 'background:' + (isActive ? 'var(--bg-tertiary)' : 'transparent') + ';'
       + 'border:1px solid ' + (isActive ? 'var(--accent-blue)' : 'transparent') + '"'
-      + ' onclick="selectProject(\\''+p.projectId+'\\')\">'
+      + ' data-project-id="'+p.projectId+'">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center">'
       + '<div style="font-size:13px;font-weight:500">' + esc(p.name) + '</div>'
+      + '<button class="btn btn-secondary delete-btn" style="padding:2px 8px;font-size:10px" data-delete-id="'+p.projectId+'">Delete</button>'
+      + '</div>'
       + '<div style="font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;margin-top:2px">'
       + '<span>' + (p.currentPhase || p.status) + '</span>'
       + '<span class="badge badge-' + p.status + '">' + p.status + '</span>'
       + '</div></div>';
   }).join('');
+}
+
+// ---- Event delegation setup (called once at init) ----
+function setupEventDelegation() {
+  const projectListBody = document.getElementById('projectListBody');
+
+  // Event delegation for project items
+  projectListBody.addEventListener('click', (e) => {
+    const target = e.target;
+    const projectItem = target.closest('[data-project-id]');
+    if (projectItem && !target.closest('.delete-btn')) {
+      selectProject(projectItem.dataset.projectId);
+    }
+  });
+
+  // Event delegation for delete buttons
+  projectListBody.addEventListener('click', (e) => {
+    const target = e.target;
+    if (target.classList.contains('delete-btn')) {
+      const id = target.dataset.deleteId;
+      if (id) deleteProject(id);
+    }
+  });
+
+  // Event delegation for phase group headers
+  document.addEventListener('click', (e) => {
+    const target = e.target;
+    const header = target.closest('.phase-group-header');
+    if (header) {
+      const phase = header.dataset.phase;
+      if (phase) togglePhaseGroup(phase);
+    }
+  });
+
+  // Event delegation for artifact items
+  document.addEventListener('click', (e) => {
+    const target = e.target;
+    const item = target.closest('.artifact-item');
+    if (item) {
+      const phase = item.dataset.phase;
+      const file = item.dataset.file;
+      if (phase && file) viewArtifact(phase, file);
+    }
+  });
 }
 
 function selectProject(id) {
@@ -770,9 +841,6 @@ function selectProject(id) {
 async function refreshProject() {
   if (!currentProjectId) return;
 
-  document.getElementById('noProject').classList.remove('visible');
-  document.getElementById('hasProject').classList.add('visible');
-
   // Fetch project, tasks, artifacts in parallel
   const [projData, taskData, confirmData, inProgressData] = await Promise.all([
     apiGet('/api/projects/' + currentProjectId),
@@ -781,7 +849,17 @@ async function refreshProject() {
     apiGet('/api/projects/' + currentProjectId + '/tasks/in-progress'),
   ]);
 
-  if (!projData.project) return;
+  // If project not found (deleted), clear selection
+  if (!projData.project) {
+    currentProjectId = null;
+    localStorage.removeItem('currentProjectId');
+    document.getElementById('noProject').classList.add('visible');
+    document.getElementById('hasProject').classList.remove('visible');
+    return;
+  }
+
+  document.getElementById('noProject').classList.remove('visible');
+  document.getElementById('hasProject').classList.add('visible');
 
   // Load current activities from in-progress tasks
   loadCurrentActivities(inProgressData.tasks || []);
@@ -859,7 +937,7 @@ function renderTasks(tasks) {
     const label = PHASE_LABELS[phase] || phase;
 
     html += '<div class="phase-group">'
-      + '<div class="phase-group-header' + (isCollapsed ? ' collapsed' : '') + '" onclick="togglePhaseGroup(\\'' + phase + '\\')">'
+      + '<div class="phase-group-header' + (isCollapsed ? ' collapsed' : '') + '" data-phase="' + phase + '">'
       + '<div class="phase-group-left">'
       + '<span class="arrow">&#9660;</span>'
       + '<span>' + label + '</span>'
@@ -887,12 +965,8 @@ function togglePhaseGroup(phase) {
   } else {
     collapsedPhases.add(phase);
   }
-  const headers = document.querySelectorAll('.phase-group-header');
-  headers.forEach(h => {
-    if (h.getAttribute('onclick').includes(phase)) {
-      h.classList.toggle('collapsed');
-    }
-  });
+  const header = document.querySelector('.phase-group-header[data-phase="' + phase + '"]');
+  if (header) header.classList.toggle('collapsed');
   const body = document.getElementById('phase-body-' + phase);
   if (body) body.classList.toggle('collapsed');
 }
@@ -917,7 +991,7 @@ async function loadArtifacts(project) {
     return;
   }
   list.innerHTML = allArtifacts.map(a =>
-    '<div class="artifact-item" onclick="viewArtifact(\\''+a.phase+'\\',\\''+a.file+'\\')\">'
+    '<div class="artifact-item" data-phase="'+a.phase+'" data-file="'+a.file+'">'
     + '<span>' + esc(a.file) + '</span>'
     + '<span class="artifact-phase">' + a.phase + '</span>'
     + '</div>'
@@ -1117,6 +1191,7 @@ function fmtTime(iso) {
 
 // ---- Init ----
 connectWS();
+setupEventDelegation();
 loadProjects();
 
 // Close modals on overlay click

@@ -118,6 +118,19 @@ export async function createApp(deps: AppDependencies) {
     return { project };
   });
 
+  // DELETE /api/projects/:projectId - Delete a project
+  app.delete<{
+    Params: { projectId: string };
+  }>('/api/projects/:projectId', async (request, reply) => {
+    const { projectId } = request.params;
+    try {
+      await projectService.deleteProject(projectId);
+      return { success: true };
+    } catch (err) {
+      return reply.status(404).send({ error: (err as Error).message });
+    }
+  });
+
   // GET /api/projects/:projectId/pending-confirmation - Get pending confirmation
   app.get<{
     Params: { projectId: string };

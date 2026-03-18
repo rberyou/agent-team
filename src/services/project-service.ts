@@ -182,4 +182,13 @@ export class ProjectService {
   async listProjects(): Promise<Project[]> {
     return this.projectStore.listAll();
   }
+
+  async deleteProject(projectId: string): Promise<void> {
+    const project = await this.projectStore.load(projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+    await this.projectStore.delete(projectId);
+    logger.info({ projectId }, 'Project deleted');
+  }
 }

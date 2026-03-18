@@ -65,4 +65,12 @@ export class ProjectStore {
     }
     return projects;
   }
+
+  /**
+   * Delete a project and all its data.
+   */
+  async delete(projectId: string): Promise<void> {
+    const projectDir = join(this.dataDir, 'projects', projectId);
+    await this.fileStore.delete(projectDir);
+  }
 }
