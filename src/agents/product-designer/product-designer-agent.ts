@@ -95,6 +95,16 @@ export class ProductDesignerAgent extends BaseAgent {
   ): Promise<void> {
     const taskId = task.taskId;
 
+    await this.emit(
+      EventType.AgentThinking,
+      event.projectId,
+      {
+        taskId,
+        message: 'Analyzing requirement',
+      },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
+
     // Generate PRD: detect rework vs initial
     let prd: Record<string, unknown>;
     let llmMetadata: Record<string, unknown> = { source: 'fallback' };
@@ -107,6 +117,19 @@ export class ProductDesignerAgent extends BaseAgent {
 
     if (isRework) {
       this.logger.info({ taskId }, 'Previous PRD found, entering rework mode');
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Revising existing PRD based on feedback' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
+    } else {
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Generating PRD document' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
     }
 
     if (this.llmService.isEnabled) {
@@ -138,6 +161,13 @@ export class ProductDesignerAgent extends BaseAgent {
 
     // Save artifact
     await this.artifactStore.save(event.projectId, 'analysis', 'prd.json', prd);
+
+    await this.emit(
+      EventType.AgentWorking,
+      event.projectId,
+      { taskId, message: 'Saving PRD artifact' },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
 
     // Emit artifact.produced
     await this.emit(

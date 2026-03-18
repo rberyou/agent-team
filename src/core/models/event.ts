@@ -48,6 +48,12 @@ export const EventType = {
   DeploymentCompleted: 'deployment.completed',
   DeploymentFailed: 'deployment.failed',
 
+  // Agent progress events
+  AgentWorking: 'agent.working',
+  AgentThinking: 'agent.thinking',
+  AgentToolUsed: 'agent.tool_used',
+  AgentCompleted: 'agent.completed',
+
   // Change events
   ChangeAnalyzed: 'change.analyzed',
   ChangeApproved: 'change.approved',

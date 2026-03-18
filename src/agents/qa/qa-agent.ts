@@ -128,6 +128,14 @@ export class QAAgent extends BaseAgent {
 
   private async executeTestingWork(event: Event, task: Task): Promise<void> {
     const taskId = task.taskId;
+
+    await this.emit(
+      EventType.AgentThinking,
+      event.projectId,
+      { taskId, message: 'Analyzing PRD and design for test planning' },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
+
     const prd = await this.artifactStore.load<Record<string, unknown>>(
       event.projectId, 'analysis', 'prd.json',
     );
@@ -149,6 +157,19 @@ export class QAAgent extends BaseAgent {
 
     if (isRework) {
       this.logger.info({ taskId }, 'Previous test report found, entering rework mode');
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Revising test report based on feedback' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
+    } else {
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Generating test plan and executing tests' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
     }
 
     if (this.llmService.isEnabled) {
@@ -180,6 +201,13 @@ export class QAAgent extends BaseAgent {
 
     // Save test report artifact
     await this.artifactStore.save(event.projectId, 'testing', 'test-report.json', testReport);
+
+    await this.emit(
+      EventType.AgentWorking,
+      event.projectId,
+      { taskId, message: 'Saving test report artifact' },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
 
     // Emit artifact.produced
     await this.emit(
@@ -226,6 +254,13 @@ export class QAAgent extends BaseAgent {
   private async executeAcceptanceWork(event: Event, task: Task): Promise<void> {
     const taskId = task.taskId;
 
+    await this.emit(
+      EventType.AgentThinking,
+      event.projectId,
+      { taskId, message: 'Analyzing all artifacts for acceptance verification' },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
+
     // Load ALL upstream artifacts
     const prd = await this.artifactStore.load<Record<string, unknown>>(
       event.projectId, 'analysis', 'prd.json',
@@ -251,6 +286,19 @@ export class QAAgent extends BaseAgent {
 
     if (isRework) {
       this.logger.info({ taskId }, 'Previous acceptance report found, entering rework mode');
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Revising acceptance report based on feedback' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
+    } else {
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Verifying acceptance criteria and generating report' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
     }
 
     if (this.llmService.isEnabled) {

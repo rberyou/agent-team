@@ -112,6 +112,13 @@ export class UIDesignerAgent extends BaseAgent {
   ): Promise<void> {
     const taskId = task.taskId;
 
+    await this.emit(
+      EventType.AgentThinking,
+      event.projectId,
+      { taskId, message: 'Analyzing PRD for UI design' },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
+
     // Load PRD from analysis phase
     const prd = await this.artifactStore.load(event.projectId, 'analysis', 'prd.json');
 
@@ -127,6 +134,19 @@ export class UIDesignerAgent extends BaseAgent {
 
     if (isRework) {
       this.logger.info({ taskId }, 'Previous UI design found, entering rework mode');
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Revising UI design based on feedback' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
+    } else {
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Generating UI design document' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
     }
 
     if (this.llmService.isEnabled) {
@@ -158,6 +178,13 @@ export class UIDesignerAgent extends BaseAgent {
 
     // Save artifact
     await this.artifactStore.save(event.projectId, 'design', 'ui-design.json', uiDesign);
+
+    await this.emit(
+      EventType.AgentWorking,
+      event.projectId,
+      { taskId, message: 'Saving UI design artifact' },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
 
     // Emit artifact.produced
     await this.emit(

@@ -145,6 +145,16 @@ export async function createApp(deps: AppDependencies) {
     return { tasks };
   });
 
+  // GET /api/projects/:projectId/tasks/in-progress - Get in-progress tasks
+  app.get<{
+    Params: { projectId: string };
+  }>('/api/projects/:projectId/tasks/in-progress', async (request) => {
+    const { projectId } = request.params;
+    const tasks = await taskService.listTasks(projectId);
+    const inProgressTasks = tasks.filter((t) => t.status === 'in_progress');
+    return { tasks: inProgressTasks };
+  });
+
   // --- User Decisions ---
 
   // POST /api/projects/:projectId/confirm - User confirms (e.g., approve PRD)

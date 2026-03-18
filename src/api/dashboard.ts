@@ -243,6 +243,67 @@ export function getDashboardHtml(): string {
   }
   .event-source { color: var(--text-muted); }
 
+  /* Current Activity Panel */
+  .activity-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .activity-panel-header {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .activity-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: normal;
+    margin-left: auto;
+  }
+  .activity-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .activity-panel-body {
+    padding: 12px 16px;
+  }
+  .activity-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 0;
+  }
+  .activity-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent-blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .activity-content { flex: 1; }
+  .activity-message { font-size: 13px; color: var(--text-primary); }
+  .activity-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .activity-empty { font-size: 13px; color: var(--text-muted); text-align: center; padding: 16px; }
+
   /* Create project */
   .create-section {
     margin-bottom: 20px;
@@ -428,6 +489,18 @@ export function getDashboardHtml(): string {
           </div>
         </div>
 
+        <!-- Current Activity -->
+        <div class="activity-panel" id="activityPanel">
+          <div class="activity-panel-header">
+            <div class="activity-indicator"></div>
+            <span>Current Activity</span>
+            <span class="activity-count" id="activityCount"></span>
+          </div>
+          <div class="activity-panel-body">
+            <div id="activityList"></div>
+          </div>
+        </div>
+
         <!-- Action panel -->
         <div class="action-panel" id="actionPanel">
           <h3 id="actionTitle">Action Required</h3>
@@ -525,6 +598,8 @@ let currentProjectId = null;
 let pendingConfirmation = null; // { confirmationType, taskId }
 let events = [];
 const collapsedPhases = new Set();
+let currentActivities = []; // { id, message, source, timestamp, type }
+const MAX_ACTIVITIES = 10;
 
 const API = '';
 const PHASES = ['analysis','design','implementation','testing','acceptance'];
@@ -548,6 +623,12 @@ function connectWS() {
     document.getElementById('wsDot').classList.add('connected');
     document.getElementById('wsLabel').textContent = 'Connected';
     reconnectDelay = 1000;
+    // Restore current project after WS connection
+    const savedProjectId = localStorage.getItem('currentProjectId');
+    if (savedProjectId && !currentProjectId) {
+      currentProjectId = savedProjectId;
+      refreshProject();
+    }
   };
 
   ws.onmessage = (msg) => {
@@ -582,6 +663,12 @@ function handleEvent(event) {
   events.unshift(event);
   if (events.length > 200) events.pop();
   renderTimeline();
+
+  // Handle agent progress events (working/thinking)
+  if ((event.type === 'agent.working' || event.type === 'agent.thinking') && 
+      currentProjectId && event.projectId === currentProjectId) {
+    handleAgentActivity(event);
+  }
 
   // If event belongs to current project, refresh data
   if (currentProjectId && event.projectId === currentProjectId) {
@@ -672,6 +759,7 @@ async function loadProjects() {
 
 function selectProject(id) {
   currentProjectId = id;
+  localStorage.setItem('currentProjectId', id);
   pendingConfirmation = null;
   hideActionPanel();
   refreshProject();
@@ -686,13 +774,17 @@ async function refreshProject() {
   document.getElementById('hasProject').classList.add('visible');
 
   // Fetch project, tasks, artifacts in parallel
-  const [projData, taskData, confirmData] = await Promise.all([
+  const [projData, taskData, confirmData, inProgressData] = await Promise.all([
     apiGet('/api/projects/' + currentProjectId),
     apiGet('/api/projects/' + currentProjectId + '/tasks'),
     apiGet('/api/projects/' + currentProjectId + '/pending-confirmation'),
+    apiGet('/api/projects/' + currentProjectId + '/tasks/in-progress'),
   ]);
 
   if (!projData.project) return;
+
+  // Load current activities from in-progress tasks
+  loadCurrentActivities(inProgressData.tasks || []);
   const project = projData.project;
   const tasks = taskData.tasks || [];
 
@@ -925,6 +1017,86 @@ function renderTimeline() {
     + '<span class="event-time">' + fmtTime(e.timestamp) + '</span>'
     + '</div></div>'
   ).join('');
+}
+
+// ---- Current Activity ----
+function handleAgentActivity(event) {
+  const { taskId, message } = event.payload || {};
+  if (!message) return;
+
+  // Remove existing activity for same task
+  currentActivities = currentActivities.filter(a => a.taskId !== taskId);
+
+  // Add new activity at the beginning
+  currentActivities.unshift({
+    id: event.id,
+    taskId,
+    message,
+    source: event.source,
+    timestamp: event.timestamp,
+    type: event.type,
+  });
+
+  // Keep only recent activities
+  if (currentActivities.length > MAX_ACTIVITIES) {
+    currentActivities = currentActivities.slice(0, MAX_ACTIVITIES);
+  }
+
+  renderActivities();
+}
+
+function renderActivities() {
+  const list = document.getElementById('activityList');
+  const panel = document.getElementById('activityPanel');
+
+  if (currentActivities.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = 'block';
+  
+  // Update activity count
+  const countEl = document.getElementById('activityCount');
+  if (currentActivities.length > 1) {
+    countEl.textContent = currentActivities.length + ' tasks';
+  } else {
+    countEl.textContent = '';
+  }
+  
+  list.innerHTML = currentActivities.map(a => {
+    return '<div class="activity-item">'
+      + '<div class="activity-spinner"></div>'
+      + '<div class="activity-content">'
+      + '<div class="activity-message">' + esc(a.message) + '</div>'
+      + '<div class="activity-meta">' + esc(a.source) + ' · ' + fmtTime(a.timestamp) + '</div>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function loadCurrentActivities(inProgressTasks) {
+  currentActivities = inProgressTasks.map(t => ({
+    id: t.taskId,
+    taskId: t.taskId,
+    message: getTaskActivityMessage(t),
+    source: 'agent:' + t.assignedTo,
+    timestamp: t.startedAt || t.updatedAt,
+    type: 'in_progress',
+  }));
+  renderActivities();
+}
+
+function getTaskActivityMessage(task) {
+  const phaseLabels = {
+    analysis: 'Analysis',
+    design: 'Design',
+    implementation: 'Implementation',
+    testing: 'Testing',
+    acceptance: 'Acceptance',
+  };
+  const phase = phaseLabels[task.phase] || task.phase;
+  return '[' + phase + '] ' + task.title;
 }
 
 // ---- Helpers ----

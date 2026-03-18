@@ -186,6 +186,13 @@ export class DeveloperAgent extends BaseAgent {
   private async executeDesignWork(event: Event, task: Task): Promise<void> {
     const taskId = task.taskId;
 
+    await this.emit(
+      EventType.AgentThinking,
+      event.projectId,
+      { taskId, message: 'Analyzing PRD for design' },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
+
     const prd = await this.artifactStore.load<Record<string, unknown>>(
       event.projectId, 'analysis', 'prd.json',
     );
@@ -204,6 +211,19 @@ export class DeveloperAgent extends BaseAgent {
 
     if (isRework) {
       this.logger.info({ taskId }, 'Previous design found, entering rework mode');
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Revising design based on feedback' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
+    } else {
+      await this.emit(
+        EventType.AgentWorking,
+        event.projectId,
+        { taskId, message: 'Generating technical design document' },
+        { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+      );
     }
 
     if (this.llmService.isEnabled) {
@@ -235,6 +255,13 @@ export class DeveloperAgent extends BaseAgent {
 
     await this.artifactStore.save(event.projectId, 'design', 'design.json', designDoc);
 
+    await this.emit(
+      EventType.AgentWorking,
+      event.projectId,
+      { taskId, message: 'Saving design artifact' },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
+
     await this.emit(EventType.ArtifactProduced, event.projectId, {
       artifactType: 'design', taskId,
       path: 'artifacts/design/design.json',
@@ -265,6 +292,13 @@ export class DeveloperAgent extends BaseAgent {
     await this.taskService.transitionTask(
       event.projectId, taskId, TaskStatus.InProgress,
       'Developer started task splitting', event.id,
+    );
+
+    await this.emit(
+      EventType.AgentThinking,
+      event.projectId,
+      { taskId, message: 'Analyzing design document' },
+      { phase: task.phase, causationId: event.id },
     );
 
     // Load design document
@@ -349,6 +383,13 @@ export class DeveloperAgent extends BaseAgent {
         reviewTaskId: reviewTask.taskId,
       }, 'SubAgent created and task assigned');
     }
+
+    await this.emit(
+      EventType.AgentWorking,
+      event.projectId,
+      { taskId, message: `Splitting into ${components.length} module tasks` },
+      { phase: task.phase, causationId: event.id },
+    );
 
     // 3. Now start all SubAgents and tell them to work.
     // All tasks and review tasks are fully set up, so the event chain is safe.
@@ -501,6 +542,13 @@ export class DeveloperAgent extends BaseAgent {
     parentTaskId: string,
     subTaskIds: string[],
   ): Promise<void> {
+    await this.emit(
+      EventType.AgentWorking,
+      projectId,
+      { taskId: parentTaskId, message: 'Running integration verification' },
+      { phase: PhaseName.Implementation },
+    );
+
     // Collect module names and their code artifacts
     const modules: string[] = [];
     const codeArtifacts: Record<string, unknown>[] = [];
@@ -585,6 +633,13 @@ export class DeveloperAgent extends BaseAgent {
       'Developer started bug fix', event.id,
     );
 
+    await this.emit(
+      EventType.AgentThinking,
+      projectId,
+      { taskId, message: 'Analyzing test report and bug details' },
+      { phase: task.phase, causationId: event.id },
+    );
+
     // Load upstream artifacts
     const testReport = await this.artifactStore.load<Record<string, unknown>>(
       projectId, 'testing', 'test-report.json',
@@ -624,6 +679,13 @@ export class DeveloperAgent extends BaseAgent {
 
     // Save bugfix artifact
     await this.artifactStore.save(projectId, 'testing', 'bugfix.json', bugfix);
+
+    await this.emit(
+      EventType.AgentWorking,
+      projectId,
+      { taskId, message: 'Saving bugfix artifact' },
+      { phase: task.phase, causationId: event.id },
+    );
 
     // Transition to in_review BEFORE emitting artifact.produced
     await this.taskService.transitionTask(
@@ -825,6 +887,13 @@ export class DeveloperAgent extends BaseAgent {
     await this.taskService.transitionTask(
       projectId, taskId, TaskStatus.InProgress,
       'Developer started acceptance fix', event.id,
+    );
+
+    await this.emit(
+      EventType.AgentThinking,
+      projectId,
+      { taskId, message: 'Analyzing user feedback and code' },
+      { phase: task.phase, causationId: event.id },
     );
 
     // Load upstream artifacts
