@@ -55,29 +55,39 @@ export class EventStore {
   }
 
   /**
+   * Get all pending confirmations for a project.
+   * Returns all user.confirmation_needed events that haven't been
+   * followed by a user.confirmed or user.rejected event.
+   */
+  async getPendingConfirmations(projectId: string): Promise<Event[]> {
+    const events = await this.readAll(projectId);
+
+    const pendingConfirmations: Event[] = [];
+
+    for (const event of events) {
+      if (event.type === 'user.confirmation_needed') {
+        pendingConfirmations.push(event);
+      } else if (event.type === 'user.confirmed' || event.type === 'user.rejected') {
+        const newType = event.payload?.confirmationType;
+        const index = pendingConfirmations.findIndex(
+          (p) => p.payload?.confirmationType === newType
+        );
+        if (index !== -1) {
+          pendingConfirmations.splice(index, 1);
+        }
+      }
+    }
+
+    return pendingConfirmations;
+  }
+
+  /**
    * Get the latest pending confirmation for a project.
    * Returns the last user.confirmation_needed event that hasn't been
    * followed by a user.confirmed or user.rejected event.
    */
   async getPendingConfirmation(projectId: string): Promise<Event | null> {
-    const events = await this.readAll(projectId);
-
-    let lastConfirmationNeeded: Event | null = null;
-
-    for (const event of events) {
-      if (event.type === 'user.confirmation_needed') {
-        lastConfirmationNeeded = event;
-      } else if (event.type === 'user.confirmed' || event.type === 'user.rejected') {
-        if (lastConfirmationNeeded) {
-          const confType = lastConfirmationNeeded.payload?.confirmationType;
-          const newType = event.payload?.confirmationType;
-          if (confType === newType) {
-            lastConfirmationNeeded = null;
-          }
-        }
-      }
-    }
-
-    return lastConfirmationNeeded;
+    const all = await this.getPendingConfirmations(projectId);
+    return all.length > 0 ? all[all.length - 1] : null;
   }
 }

@@ -140,6 +140,15 @@ export async function createApp(deps: AppDependencies) {
     return { pendingConfirmation: confirmation };
   });
 
+  // GET /api/projects/:projectId/pending-confirmations - Get all pending confirmations
+  app.get<{
+    Params: { projectId: string };
+  }>('/api/projects/:projectId/pending-confirmations', async (request, _reply) => {
+    const { projectId } = request.params;
+    const confirmations = await eventStore.getPendingConfirmations(projectId);
+    return { pendingConfirmations: confirmations };
+  });
+
   // --- Tasks ---
 
   // GET /api/projects/:projectId/tasks - List tasks for a project

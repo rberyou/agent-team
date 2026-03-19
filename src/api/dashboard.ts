@@ -595,7 +595,7 @@ let ws = null;
 let reconnectTimer = null;
 let reconnectDelay = 1000;
 let currentProjectId = null;
-let pendingConfirmation = null; // { confirmationType, taskId }
+let pendingConfirmations = []; // Array of { confirmationType, taskId }
 let events = [];
 const collapsedPhases = new Set();
 let currentActivities = []; // { id, message, source, timestamp, type }
@@ -676,13 +676,30 @@ function handleEvent(event) {
     refreshProject();
   }
 
-  // Handle confirmation_needed
+  // Handle confirmation_needed - add to pending list if not already there
   if (event.type === 'user.confirmation_needed' && event.projectId === currentProjectId) {
-    pendingConfirmation = {
+    const newConf = {
       confirmationType: event.payload.confirmationType,
       taskId: event.payload.taskId,
     };
+    const exists = pendingConfirmations.some(
+      c => c.confirmationType === newConf.confirmationType && c.taskId === newConf.taskId
+    );
+    if (!exists) {
+      pendingConfirmations.push(newConf);
+    }
     showActionPanel();
+  }
+
+  // Handle user.confirmed/user.rejected - remove from pending list
+  if ((event.type === 'user.confirmed' || event.type === 'user.rejected') && event.projectId === currentProjectId) {
+    const confType = event.payload.confirmationType;
+    pendingConfirmations = pendingConfirmations.filter(c => c.confirmationType !== confType);
+    if (pendingConfirmations.length === 0) {
+      hideActionPanel();
+    } else {
+      showActionPanel();
+    }
   }
 
   // If a new project was created, refresh project list
@@ -831,7 +848,7 @@ function setupEventDelegation() {
 function selectProject(id) {
   currentProjectId = id;
   localStorage.setItem('currentProjectId', id);
-  pendingConfirmation = null;
+  pendingConfirmations = [];
   hideActionPanel();
   refreshProject();
   loadProjects();
@@ -845,7 +862,7 @@ async function refreshProject() {
   const [projData, taskData, confirmData, inProgressData] = await Promise.all([
     apiGet('/api/projects/' + currentProjectId),
     apiGet('/api/projects/' + currentProjectId + '/tasks'),
-    apiGet('/api/projects/' + currentProjectId + '/pending-confirmation'),
+    apiGet('/api/projects/' + currentProjectId + '/pending-confirmations'),
     apiGet('/api/projects/' + currentProjectId + '/tasks/in-progress'),
   ]);
 
@@ -858,6 +875,27 @@ async function refreshProject() {
     return;
   }
 
+  // Update pending confirmations from server
+  const serverConfirmations = confirmData.pendingConfirmations || [];
+  // Keep any new confirmations that aren't in the server list yet
+  pendingConfirmations = pendingConfirmations.filter(
+    c => serverConfirmations.some(sc => sc.payload.confirmationType === c.confirmationType)
+  );
+  // Add server confirmations that aren't in the local list
+  serverConfirmations.forEach(sc => {
+    const confType = sc.payload.confirmationType;
+    const taskId = sc.payload.taskId;
+    if (!pendingConfirmations.some(c => c.confirmationType === confType && c.taskId === taskId)) {
+      pendingConfirmations.push({ confirmationType: confType, taskId });
+    }
+  });
+
+  if (pendingConfirmations.length > 0) {
+    showActionPanel();
+  } else {
+    hideActionPanel();
+  }
+
   document.getElementById('noProject').classList.remove('visible');
   document.getElementById('hasProject').classList.add('visible');
 
@@ -865,18 +903,6 @@ async function refreshProject() {
   loadCurrentActivities(inProgressData.tasks || []);
   const project = projData.project;
   const tasks = taskData.tasks || [];
-
-  // Update pending confirmation from server
-  if (confirmData.pendingConfirmation) {
-    pendingConfirmation = {
-      confirmationType: confirmData.pendingConfirmation.payload.confirmationType,
-      taskId: confirmData.pendingConfirmation.payload.taskId,
-    };
-    showActionPanel();
-  } else {
-    pendingConfirmation = null;
-    hideActionPanel();
-  }
 
   // Update phase bar
   updatePhaseBar(project);
@@ -1019,18 +1045,31 @@ function closeArtifactModal() {
 
 // ---- Action panel ----
 function showActionPanel() {
-  if (!pendingConfirmation) return;
+  if (pendingConfirmations.length === 0) return;
+  
+  const pendingConfirmation = pendingConfirmations[0];
   const panel = document.getElementById('actionPanel');
   const label = CONFIRM_LABELS[pendingConfirmation.confirmationType] || pendingConfirmation.confirmationType;
+   
+  // Show navigation if there are multiple confirmations
+  let navHtml = '';
+  if (pendingConfirmations.length > 1) {
+    const currentIndex = pendingConfirmations.indexOf(pendingConfirmation) + 1;
+    navHtml = '<div style="margin-bottom:10px;font-size:12px;color:var(--text-muted)">' + currentIndex + ' of ' + pendingConfirmations.length + ' pending</div>';
+  }
+  
   document.getElementById('actionTitle').textContent = 'Action Required: ' + label;
 
   if (pendingConfirmation.confirmationType === 'acceptance_trial' && currentProjectId) {
     const previewUrl = '/preview/' + currentProjectId + '/';
     document.getElementById('actionDesc').innerHTML =
+      navHtml +
       '<p style="margin-bottom:10px">Preview environment is ready. Open the preview to try the project, then approve or reject.</p>'
       + '<a href="' + previewUrl + '" target="_blank" style="display:inline-block;padding:8px 16px;background:var(--accent-blue);color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px">Open Preview in Browser &rarr;</a>';
   } else {
-    document.getElementById('actionDesc').textContent = 'A ' + label.toLowerCase() + ' is waiting for your approval. Please review the artifacts and confirm or reject.';
+    document.getElementById('actionDesc').innerHTML =
+      navHtml +
+      'A ' + label.toLowerCase() + ' is waiting for your approval. Please review the artifacts and confirm or reject.';
   }
   panel.classList.add('visible');
 }
@@ -1040,7 +1079,8 @@ function hideActionPanel() {
 }
 
 async function confirmAction() {
-  if (!pendingConfirmation || !currentProjectId) return;
+  if (pendingConfirmations.length === 0 || !currentProjectId) return;
+  const pendingConfirmation = pendingConfirmations[0];
   const btn = document.getElementById('confirmBtn');
   btn.disabled = true;
   try {
@@ -1048,8 +1088,13 @@ async function confirmAction() {
       confirmationType: pendingConfirmation.confirmationType,
       taskId: pendingConfirmation.taskId,
     });
-    pendingConfirmation = null;
-    hideActionPanel();
+    // Remove the confirmed one from the list
+    pendingConfirmations.shift();
+    if (pendingConfirmations.length === 0) {
+      hideActionPanel();
+    } else {
+      showActionPanel();
+    }
     setTimeout(() => refreshProject(), 300);
   } finally {
     btn.disabled = false;
@@ -1066,15 +1111,21 @@ function closeRejectModal() {
 }
 
 async function rejectAction() {
-  if (!pendingConfirmation || !currentProjectId) return;
+  if (pendingConfirmations.length === 0 || !currentProjectId) return;
+  const pendingConfirmation = pendingConfirmations[0];
   const feedback = document.getElementById('rejectFeedback').value.trim();
   await apiPost('/api/projects/' + currentProjectId + '/reject', {
     confirmationType: pendingConfirmation.confirmationType,
     taskId: pendingConfirmation.taskId,
     feedback,
   });
-  pendingConfirmation = null;
-  hideActionPanel();
+  // Remove the rejected one from the list
+  pendingConfirmations.shift();
+  if (pendingConfirmations.length === 0) {
+    hideActionPanel();
+  } else {
+    showActionPanel();
+  }
   closeRejectModal();
   setTimeout(() => refreshProject(), 300);
 }
