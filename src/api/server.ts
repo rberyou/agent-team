@@ -149,6 +149,20 @@ export async function createApp(deps: AppDependencies) {
     return { pendingConfirmations: confirmations };
   });
 
+  // GET /api/projects/:projectId/events - Get event timeline
+  app.get<{
+    Params: { projectId: string };
+    Querystring: { limit?: string; offset?: string };
+  }>('/api/projects/:projectId/events', async (request) => {
+    const { projectId } = request.params;
+    const limit = Math.min(parseInt(request.query.limit || '500'), 1000);
+    const offset = parseInt(request.query.offset || '0');
+    const allEvents = await eventStore.readAll(projectId);
+    const total = allEvents.length;
+    const events = allEvents.slice(offset, offset + limit);
+    return { events, total, limit, offset };
+  });
+
   // --- Tasks ---
 
   // GET /api/projects/:projectId/tasks - List tasks for a project

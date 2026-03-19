@@ -233,8 +233,39 @@ export function getDashboardHtml(): string {
     padding: 8px 0;
     border-bottom: 1px solid var(--border);
     font-size: 12px;
+    transition: background 0.2s;
   }
   .event-item:last-child { border-bottom: none; }
+  .event-item:hover { background: var(--bg-tertiary); }
+  
+  /* Historical events - lower brightness */
+  .event-item:not(.live) {
+    opacity: 0.7;
+    filter: brightness(0.85);
+  }
+  
+  /* Live events */
+  .event-item.live {
+    background: rgba(63, 185, 80, 0.08);
+    opacity: 1;
+    filter: none;
+  }
+  
+  /* Live indicator dot */
+  .live-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    margin-left: 6px;
+    animation: livePulse 1.5s ease-in-out infinite;
+  }
+  @keyframes livePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  
   .event-time { color: var(--text-muted); font-family: monospace; }
   .event-type {
     color: var(--accent-cyan);
@@ -242,6 +273,16 @@ export function getDashboardHtml(): string {
     font-weight: 500;
   }
   .event-source { color: var(--text-muted); }
+  .event-badge {
+    display: inline-block;
+    margin-left: 4px;
+    font-size: 11px;
+  }
+  .event-info {
+    color: var(--text-secondary);
+    margin: 3px 0;
+    font-size: 11px;
+  }
 
   /* Current Activity Panel */
   .activity-panel {
@@ -597,6 +638,8 @@ let reconnectDelay = 1000;
 let currentProjectId = null;
 let pendingConfirmations = []; // Array of { confirmationType, taskId }
 let events = [];
+let liveEventIds = new Set(); // Track live events (from WebSocket)
+let taskMap = {}; // taskId -> task title for event display
 const collapsedPhases = new Set();
 let currentActivities = []; // { id, message, source, timestamp, type }
 const MAX_ACTIVITIES = 10;
@@ -660,9 +703,15 @@ function scheduleReconnect() {
 
 // ---- Event handling ----
 function handleEvent(event) {
-  // Add to timeline
+  // Add to timeline and mark as live
   events.unshift(event);
-  if (events.length > 200) events.pop();
+  liveEventIds.add(event.id);
+  if (events.length > 200) {
+    const oldestNonLive = events.findLastIndex(e => !liveEventIds.has(e.id));
+    if (oldestNonLive !== -1) {
+      events.splice(oldestNonLive, 1);
+    }
+  }
   renderTimeline();
 
   // Handle agent progress events (working/thinking)
@@ -710,6 +759,23 @@ function handleEvent(event) {
       refreshProject();
     }
   }
+}
+
+// ---- Load historical events from server ----
+async function loadHistoricalEvents(projectId) {
+  try {
+    const resp = await apiGet('/api/projects/' + projectId + '/events?limit=500');
+    if (resp.events) {
+      const existingIds = new Set(events.map(e => e.id));
+      for (const e of resp.events) {
+        if (!existingIds.has(e.id)) {
+          events.push(e);  // Historical events not added to liveEventIds
+        }
+      }
+      events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      renderTimeline();
+    }
+  } catch(e) { /* ignore */ }
 }
 
 // ---- API calls ----
@@ -850,6 +916,10 @@ function selectProject(id) {
   localStorage.setItem('currentProjectId', id);
   pendingConfirmations = [];
   hideActionPanel();
+  // Reset events for new project
+  events = [];
+  liveEventIds.clear();
+  renderTimeline();
   refreshProject();
   loadProjects();
 }
@@ -922,6 +992,15 @@ async function refreshProject() {
 
   // Update tasks
   renderTasks(tasks);
+
+  // Cache task titles for event display
+  taskMap = {};
+  for (const t of tasks) {
+    taskMap[t.taskId] = t.title;
+  }
+
+  // Load historical events for this project
+  loadHistoricalEvents(currentProjectId);
 
   // Load artifacts
   await loadArtifacts(project);
@@ -1131,17 +1210,65 @@ async function rejectAction() {
 }
 
 // ---- Timeline ----
+const EVENT_CONFIG = {
+  'agent.working':           { badge: '🔄', msg: e => e.payload?.message },
+  'agent.thinking':          { badge: '💭', msg: e => e.payload?.message },
+  'agent.tool_used':         { badge: '🔧', msg: e => e.payload?.tool },
+  'agent.completed':         { badge: '✅', msg: e => e.payload?.message },
+  'task.created':            { badge: '📋', msg: e => e.payload?.title || taskMap[e.payload?.taskId] || e.payload?.taskId },
+  'task.started':            { badge: '▶️', msg: e => taskMap[e.payload?.taskId] || e.payload?.taskId },
+  'task.completed':          { badge: '✅', msg: e => taskMap[e.payload?.taskId] || e.payload?.taskId },
+  'task.failed':             { badge: '❌', msg: e => taskMap[e.payload?.taskId] || e.payload?.taskId },
+  'task.blocked':            { badge: '🚫', msg: e => taskMap[e.payload?.taskId] || e.payload?.taskId },
+  'phase.entered':           { badge: '📍', msg: e => '进入阶段: ' + (e.payload?.phase || e.phase) },
+  'phase.completed':         { badge: '🎉', msg: e => '完成阶段: ' + (e.payload?.phase || e.phase) },
+  'artifact.produced':       { badge: '📄', msg: e => e.payload?.artifactType + ' - ' + (e.payload?.summary || '') },
+  'artifact.approved':       { badge: '👍', msg: e => '已批准: ' + (e.payload?.artifactType || '') },
+  'artifact.rejected':       { badge: '👎', msg: e => '已拒绝: ' + (e.payload?.artifactType || '') },
+  'user.confirmation_needed':{ badge: '⚠️', msg: e => e.payload?.message },
+  'user.confirmed':          { badge: '👍', msg: e => '已确认: ' + CONFIRM_LABELS[e.payload?.confirmationType] || e.payload?.confirmationType },
+  'user.rejected':           { badge: '👎', msg: e => '已拒绝: ' + CONFIRM_LABELS[e.payload?.confirmationType] || e.payload?.confirmationType },
+  'project.created':         { badge: '🆕', msg: e => '项目已创建' },
+  'project.status_changed':  { badge: '📊', msg: e => '状态变更: ' + (e.payload?.status || '') },
+  'review.completed':        { badge: '👀', msg: e => '审查完成' },
+  'test.completed':          { badge: '🧪', msg: e => '测试完成' },
+  'test.bug_reported':       { badge: '🐛', msg: e => '发现Bug: ' + (e.payload?.message || '') },
+  'environment.ready':       { badge: '🏠', msg: e => '环境就绪' },
+  'deployment.completed':    { badge: '🚀', msg: e => '部署完成' },
+  'deployment.failed':       { badge: '❌', msg: e => '部署失败' },
+};
+
+function formatEventInfo(e) {
+  const cfg = EVENT_CONFIG[e.type];
+  if (cfg) {
+    return {
+      badge: cfg.badge,
+      message: cfg.msg ? cfg.msg(e) : (e.payload?.message || '')
+    };
+  }
+  return {
+    badge: e.phase ? '📁' : '',
+    message: e.payload?.message || ''
+  };
+}
+
 function renderTimeline() {
   const tl = document.getElementById('timeline');
   document.getElementById('eventCount').textContent = events.length + ' events';
-  tl.innerHTML = events.slice(0, 100).map(e =>
-    '<div class="event-item">'
-    + '<div><span class="event-type">' + esc(e.type) + '</span></div>'
-    + '<div style="display:flex;justify-content:space-between;margin-top:2px">'
-    + '<span class="event-source">' + esc(e.source) + '</span>'
-    + '<span class="event-time">' + fmtTime(e.timestamp) + '</span>'
-    + '</div></div>'
-  ).join('');
+  tl.innerHTML = events.slice(0, 200).map(e => {
+    const isLive = liveEventIds.has(e.id);
+    const info = formatEventInfo(e);
+    return '<div class="event-item' + (isLive ? ' live' : '') + '">'
+      + '<div><span class="event-type">' + esc(e.type) + '</span>'
+      + (info.badge ? '<span class="event-badge">' + esc(info.badge) + '</span>' : '')
+      + (isLive ? '<span class="live-dot"></span>' : '')
+      + '</div>'
+      + (info.message ? '<div class="event-info">' + esc(info.message) + '</div>' : '')
+      + '<div style="display:flex;justify-content:space-between">'
+      + '<span class="event-source">' + esc(e.source) + '</span>'
+      + '<span class="event-time">' + fmtTime(e.timestamp) + '</span>'
+      + '</div></div>';
+  }).join('');
 }
 
 // ---- Current Activity ----
@@ -1236,7 +1363,19 @@ function fmtTime(iso) {
   if (!iso) return '-';
   try {
     const d = new Date(iso);
-    return d.toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    
+    if (isToday) {
+      return hh + ':' + min + ':' + ss;
+    }
+    return mm + '-' + dd + ' ' + hh + ':' + min + ':' + ss;
   } catch { return iso; }
 }
 
