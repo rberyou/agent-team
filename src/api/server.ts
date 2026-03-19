@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { join, extname, resolve } from 'node:path';
 import { createChildLogger } from '../logger.js';
 import type { EventBus } from '../core/event-bus/index.js';
@@ -307,10 +307,95 @@ export async function createApp(deps: AppDependencies) {
     try {
       const content = await readFile(absPath);
       return reply.type(contentType).send(content);
-    } catch {
-      return reply.status(404).send({ error: 'File not found' });
+    } catch (err) {
+      // File not found - show helpful error page with available files
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        const files = await listOutputFiles(outputRoot);
+        return reply.type('text/html').send(getPreviewErrorHtml(wildcard, files));
+      }
+      return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
   return app;
+}
+
+async function listOutputFiles(outputRoot: string): Promise<string[]> {
+  try {
+    const entries = await readdir(outputRoot, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        files.push(entry.name);
+      } else if (entry.isDirectory()) {
+        const subEntries = await readdir(join(outputRoot, entry.name), { withFileTypes: true });
+        for (const sub of subEntries) {
+          if (sub.isFile()) {
+            files.push(entry.name + '/' + sub.name);
+          }
+        }
+      }
+    }
+    return files.sort();
+  } catch {
+    return [];
+  }
+}
+
+function getPreviewErrorHtml(requestedPath: string, files: string[]): string {
+  const escapedPath = escHtml(requestedPath);
+  
+  const fileListHtml = files.length > 0
+    ? '<ul style="list-style:none;padding:0;margin:16px 0">' 
+        + files.map(f => '<li style="padding:4px 0;color:#8b949e">📄 ' + escHtml(f) + '</li>').join('')
+        + '</ul>'
+    : '<p style="color:#8b949e;margin-top:16px">No files generated yet. The project may still be processing or the code generation did not produce any frontend files.</p>';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Preview Not Available</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; margin: 0; padding: 40px; }
+    .container { max-width: 600px; margin: 0 auto; text-align: center; }
+    h1 { color: #f85149; font-size: 24px; margin-bottom: 16px; }
+    p { color: #8b949e; line-height: 1.6; }
+    .path { background: #161b22; padding: 8px 16px; border-radius: 6px; font-family: monospace; color: #58a6ff; margin: 16px 0; }
+    .info { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; text-align: left; margin-top: 24px; }
+    .info h3 { margin: 0 0 16px 0; color: #e6edf3; font-size: 16px; }
+    .info ul { margin: 0; padding-left: 20px; color: #8b949e; }
+    .info li { margin: 8px 0; }
+    code { background: #21262d; padding: 2px 6px; border-radius: 4px; color: #bc8cff; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Preview Not Available</h1>
+    <p>The requested file could not be found.</p>
+    <div class="path">${escapedPath}</div>
+    
+    <div class="info">
+      <h3>Possible Reasons:</h3>
+      <ul>
+        <li>The project is still processing — wait a moment and refresh</li>
+        <li>This project type does not generate frontend files (e.g., pure backend API)</li>
+        <li>The code generation did not include HTML/CSS files</li>
+        <li>Preview is only available for projects with UI after acceptance phase</li>
+      </ul>
+      <h3 style="margin-top:24px">Available Files (${files.length}):</h3>
+      ${fileListHtml}
+    </div>
+    
+    <p style="margin-top:24px">
+      <a href="/" style="color:#58a6ff;text-decoration:none">← Back to Dashboard</a>
+    </p>
+  </div>
+</body>
+</html>`;
+}
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
