@@ -11,11 +11,41 @@ import {
 } from '../../core/models/index.js';
 import type { Event } from '../../core/models/index.js';
 
-// Zod schema for PRD validation
+const discoveryQuestionSchema = z.object({
+  questions: z.array(z.object({
+    id: z.string(),
+    text: z.string(),
+    category: z.enum(['problem', 'success', 'constraints', 'persona', 'scope']),
+  })),
+});
+
 const prdSchema = z.object({
   title: z.string(),
   version: z.string().optional().default('1.0'),
-  overview: z.string(),
+  executiveSummary: z.object({
+    problemStatement: z.string(),
+    proposedSolution: z.string(),
+    successCriteria: z.array(z.string()),
+  }),
+  userExperience: z.object({
+    userPersonas: z.array(z.string()).default([]),
+    userStories: z.array(z.string()),
+    acceptanceCriteria: z.array(z.string()),
+    nonGoals: z.array(z.string()).default([]),
+  }),
+  aiSystemRequirements: z.object({
+    toolRequirements: z.array(z.string()).default([]),
+    evaluationStrategy: z.string().optional(),
+  }).optional(),
+  technicalSpecifications: z.object({
+    architectureOverview: z.string().optional(),
+    integrationPoints: z.array(z.string()).default([]),
+    securityPrivacy: z.string().optional(),
+  }).optional(),
+  risksRoadmap: z.object({
+    phasedRollout: z.array(z.string()).default([]),
+    technicalRisks: z.array(z.string()).default([]),
+  }).optional(),
   features: z.array(z.object({
     id: z.string(),
     name: z.string(),
@@ -33,15 +63,17 @@ const prdSchema = z.object({
   })).default([]),
 });
 
-/**
- * Product Designer Agent.
- *
- * Responsibilities:
- * - Listen for task.created assigned to product_designer
- * - Generate PRD via LLM (with fallback to template)
- * - Produce artifact and emit artifact.produced
- */
+type DiscoveryQuestions = z.infer<typeof discoveryQuestionSchema>;
+
+interface PendingTaskContext {
+  originalEvent: Event;
+  task: { taskId: string; title: string; description: string; phase: string };
+  questions: DiscoveryQuestions['questions'];
+}
+
 export class ProductDesignerAgent extends BaseAgent {
+  private pendingTasks: Map<string, PendingTaskContext> = new Map();
+
   constructor(
     eventBus: EventBus,
     private readonly taskService: TaskService,
@@ -53,12 +85,10 @@ export class ProductDesignerAgent extends BaseAgent {
 
   start(): void {
     this.on(EventType.TaskCreated, (e) => this.handleTaskCreated(e));
+    this.on(EventType.ProductDesignerAnswersReceived, (e) => this.handleAnswersReceived(e));
     this.logger.info('Product Designer Agent started');
   }
 
-  /**
-   * When a task is created and assigned to us, auto-start and produce PRD.
-   */
   private async handleTaskCreated(event: Event): Promise<void> {
     const { taskId, assignedTo } = event.payload as {
       taskId: string;
@@ -67,16 +97,14 @@ export class ProductDesignerAgent extends BaseAgent {
 
     if (assignedTo !== AgentRole.ProductDesigner) return;
 
-    this.logger.info({ taskId }, 'Received task, starting analysis');
+    this.logger.info({ taskId }, 'Received task, starting discovery interview');
 
-    // Get task details
     const task = await this.taskService.getTask(event.projectId, taskId);
     if (!task) {
       this.logger.error({ taskId }, 'Task not found');
       return;
     }
 
-    // Transition to in_progress
     await this.taskService.transitionTask(
       event.projectId,
       taskId,
@@ -85,31 +113,119 @@ export class ProductDesignerAgent extends BaseAgent {
       event.id,
     );
 
-    // Defer the LLM-heavy work to prevent blocking the event dispatch chain
-    this.deferWork(() => this.executePRDWork(event, task));
+    this.deferWork(() => this.executeDiscoveryPhase(event, task));
   }
 
-  private async executePRDWork(
-    event: Event,
+  private async executeDiscoveryPhase(
+    originalEvent: Event,
     task: { taskId: string; title: string; description: string; phase: string },
   ): Promise<void> {
     const taskId = task.taskId;
 
     await this.emit(
       EventType.AgentThinking,
-      event.projectId,
+      originalEvent.projectId,
+      { taskId, message: 'Analyzing requirement and preparing discovery questions' },
+      { phase: task.phase, correlationId: originalEvent.correlationId, causationId: originalEvent.id },
+    );
+
+    let questions: DiscoveryQuestions['questions'] = [];
+
+    if (this.llmService.isEnabled) {
+      try {
+        await this.emit(
+          EventType.AgentWorking,
+          originalEvent.projectId,
+          { taskId, message: 'Building discovery interview prompt...' },
+          { phase: task.phase, correlationId: originalEvent.correlationId, causationId: originalEvent.id },
+        );
+
+        const result = await this.generateDiscoveryQuestions(task.title, task.description);
+
+        await this.emit(
+          EventType.AgentWorking,
+          originalEvent.projectId,
+          { taskId, message: 'Parsing LLM response...' },
+          { phase: task.phase, correlationId: originalEvent.correlationId, causationId: originalEvent.id },
+        );
+
+        questions = result.questions;
+        this.logger.info({ taskId, count: questions.length }, 'Discovery questions generated via LLM');
+      } catch (err) {
+        this.logger.warn({ taskId, error: err }, 'LLM call failed for discovery questions, using fallback');
+        questions = this.generateFallbackQuestions(task.title, task.description);
+      }
+    } else {
+      questions = this.generateFallbackQuestions(task.title, task.description);
+    }
+
+    await this.emit(
+      EventType.AgentWorking,
+      originalEvent.projectId,
+      { taskId, message: `Generated ${questions.length} discovery questions, waiting for your answers` },
+      { phase: task.phase, correlationId: originalEvent.correlationId, causationId: originalEvent.id },
+    );
+
+    this.pendingTasks.set(taskId, { originalEvent, task, questions });
+
+    await this.emit(
+      EventType.ProductDesignerQuestions,
+      originalEvent.projectId,
       {
         taskId,
-        message: 'Analyzing requirement',
+        questions,
+        message: '请回答以下澄清问题以帮助完善需求分析',
       },
+      {
+        phase: task.phase,
+        correlationId: originalEvent.correlationId,
+        causationId: originalEvent.id,
+      },
+    );
+
+    this.logger.info({ taskId, questionCount: questions.length }, 'Discovery questions emitted, waiting for answers');
+  }
+
+  private async handleAnswersReceived(event: Event): Promise<void> {
+    const { taskId, answers } = event.payload as {
+      taskId: string;
+      answers: Record<string, string>;
+    };
+
+    const context = this.pendingTasks.get(taskId);
+    if (!context) {
+      this.logger.warn({ taskId }, 'Received answers but no pending task context found');
+      return;
+    }
+
+    this.logger.info({ taskId, answerCount: Object.keys(answers).length }, 'Received answers, generating PRD');
+
+    this.pendingTasks.delete(taskId);
+
+    await this.executePRDWork(context.originalEvent, context.task, context.questions, answers);
+  }
+
+  private async executePRDWork(
+    event: Event,
+    task: { taskId: string; title: string; description: string; phase: string },
+    questions: DiscoveryQuestions['questions'],
+    answers: Record<string, string>,
+  ): Promise<void> {
+    const taskId = task.taskId;
+
+    await this.artifactStore.save(event.projectId, 'analysis', 'q-and-a.json', {
+      questions,
+      answers,
+      timestamp: new Date().toISOString(),
+    });
+
+    await this.emit(
+      EventType.AgentWorking,
+      event.projectId,
+      { taskId, message: 'Saved Q&A context' },
       { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
     );
 
-    // Generate PRD: detect rework vs initial
-    let prd: Record<string, unknown>;
-    let llmMetadata: Record<string, unknown> = { source: 'fallback' };
-
-    // Check if a PRD already exists → rework mode
     const previousPrd = await this.artifactStore.load<Record<string, unknown>>(
       event.projectId, 'analysis', 'prd.json',
     );
@@ -118,25 +234,44 @@ export class ProductDesignerAgent extends BaseAgent {
     if (isRework) {
       this.logger.info({ taskId }, 'Previous PRD found, entering rework mode');
       await this.emit(
-        EventType.AgentWorking,
+        EventType.AgentThinking,
         event.projectId,
-        { taskId, message: 'Revising existing PRD based on feedback' },
+        { taskId, message: 'Analyzing feedback and previous PRD for revision' },
         { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
       );
     } else {
       await this.emit(
-        EventType.AgentWorking,
+        EventType.AgentThinking,
         event.projectId,
-        { taskId, message: 'Generating PRD document' },
+        { taskId, message: 'Analyzing requirement and Q&A context for PRD generation' },
         { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
       );
     }
 
+    const qaContext = this.buildQAContext(questions, answers);
+    let prd: Record<string, unknown>;
+    let llmMetadata: Record<string, unknown> = { source: 'fallback' };
+
     if (this.llmService.isEnabled) {
       try {
+        await this.emit(
+          EventType.AgentWorking,
+          event.projectId,
+          { taskId, message: 'Building PRD prompt...' },
+          { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+        );
+
         const result = isRework
-          ? await this.reworkPRDWithLLM(previousPrd!, task.description)
-          : await this.generatePRDWithLLM(task.title, task.description);
+          ? await this.reworkPRDWithLLM(previousPrd!, task.description, qaContext)
+          : await this.generatePRDWithLLM(task.title, task.description, qaContext);
+
+        await this.emit(
+          EventType.AgentWorking,
+          event.projectId,
+          { taskId, message: 'Parsing PRD structure from LLM response...' },
+          { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+        );
+
         prd = result.data as Record<string, unknown>;
         llmMetadata = {
           source: 'llm',
@@ -150,16 +285,22 @@ export class ProductDesignerAgent extends BaseAgent {
       } catch (err) {
         this.logger.warn({ taskId, error: err }, 'LLM call failed, falling back to template');
         prd = isRework
-          ? this.reworkFallbackPRD(previousPrd!, task.description)
-          : this.generateFallbackPRD(task.title, task.description);
+          ? this.reworkFallbackPRD(previousPrd!, task.description, qaContext)
+          : this.generateFallbackPRD(task.title, task.description, qaContext);
       }
     } else {
       prd = isRework
-        ? this.reworkFallbackPRD(previousPrd!, task.description)
-        : this.generateFallbackPRD(task.title, task.description);
+        ? this.reworkFallbackPRD(previousPrd!, task.description, qaContext)
+        : this.generateFallbackPRD(task.title, task.description, qaContext);
     }
 
-    // Save artifact
+    await this.emit(
+      EventType.AgentWorking,
+      event.projectId,
+      { taskId, message: 'Validating PRD schema...' },
+      { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
+    );
+
     await this.artifactStore.save(event.projectId, 'analysis', 'prd.json', prd);
 
     await this.emit(
@@ -169,7 +310,6 @@ export class ProductDesignerAgent extends BaseAgent {
       { phase: task.phase, correlationId: event.correlationId, causationId: event.id },
     );
 
-    // Emit artifact.produced
     await this.emit(
       EventType.ArtifactProduced,
       event.projectId,
@@ -187,7 +327,6 @@ export class ProductDesignerAgent extends BaseAgent {
       },
     );
 
-    // Transition task to in_review (waiting for user confirmation)
     await this.taskService.transitionTask(
       event.projectId,
       taskId,
@@ -199,16 +338,48 @@ export class ProductDesignerAgent extends BaseAgent {
     this.logger.info({ taskId }, 'PRD produced and submitted for review');
   }
 
-  /**
-   * Generate PRD using LLM with structured output.
-   */
-  private async generatePRDWithLLM(title: string, description: string) {
+  private buildQAContext(
+    questions: DiscoveryQuestions['questions'],
+    answers: Record<string, string>,
+  ): string {
+    const lines: string[] = [];
+    for (const q of questions) {
+      const answer = answers[q.id] || '未回答';
+      lines.push(`Q: ${q.text}`);
+      lines.push(`A: ${answer}`);
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
+
+  private async generateDiscoveryQuestions(title: string, description: string) {
     const systemPrompt = this.llmService.loadPrompt('product-designer', 'system');
-    const userPrompt = this.llmService.loadPrompt('product-designer', 'generate-prd', {
+    const userPrompt = this.llmService.loadPrompt('product-designer', 'discovery-questions', {
       title,
       description,
     });
 
+    const result = await this.llmService.generateStructuredOutput({
+      systemPrompt,
+      userPrompt,
+      schema: discoveryQuestionSchema,
+    });
+
+    return result.data as DiscoveryQuestions;
+  }
+
+  private async generatePRDWithLLM(
+    title: string,
+    description: string,
+    qaContext: string,
+  ) {
+    const systemPrompt = this.llmService.loadPrompt('product-designer', 'system');
+    const userPrompt = this.llmService.loadPrompt('product-designer', 'generate-prd', {
+      title,
+      description,
+      qaContext,
+    });
+
     return this.llmService.generateStructuredOutput({
       systemPrompt,
       userPrompt,
@@ -216,15 +387,19 @@ export class ProductDesignerAgent extends BaseAgent {
     });
   }
 
-  /**
-   * Rework PRD using LLM with previous artifact + feedback.
-   */
-  private async reworkPRDWithLLM(previousPrd: Record<string, unknown>, feedback: string) {
+  private async reworkPRDWithLLM(
+    previousPrd: Record<string, unknown>,
+    feedback: string,
+    qaContext: string,
+  ) {
     const systemPrompt = this.llmService.loadPrompt('product-designer', 'system');
     const userPrompt = this.llmService.loadPrompt('product-designer', 'rework-prd', {
       previousPrd: JSON.stringify(previousPrd, null, 2),
       feedback,
-      originalRequirement: (previousPrd as any).overview ?? '',
+      qaContext,
+      originalRequirement: (previousPrd as any)?.executiveSummary?.problemStatement
+        ?? (previousPrd as any)?.overview
+        ?? '',
     });
 
     return this.llmService.generateStructuredOutput({
@@ -234,46 +409,58 @@ export class ProductDesignerAgent extends BaseAgent {
     });
   }
 
-  /**
-   * Fallback: generate a template PRD when LLM is unavailable.
-   */
-  private generateFallbackPRD(title: string, description: string): Record<string, unknown> {
+  private generateFallbackQuestions(_title: string, _description: string): DiscoveryQuestions['questions'] {
+    return [
+      { id: 'Q1', text: '为什么要现在做这个项目？核心问题是什么？', category: 'problem' },
+      { id: 'Q2', text: '如何衡量项目成功？有哪些关键指标？', category: 'success' },
+      { id: 'Q3', text: '有什么技术约束、预算限制或截止日期吗？', category: 'constraints' },
+      { id: 'Q4', text: '谁是目标用户？他们的主要使用场景是什么？', category: 'persona' },
+      { id: 'Q5', text: '有哪些功能是明确不在范围内的？', category: 'scope' },
+    ];
+  }
+
+  private generateFallbackPRD(
+    title: string,
+    description: string,
+    qaContext: string,
+  ): Record<string, unknown> {
     return {
       title,
       version: '1.0',
       createdAt: new Date().toISOString(),
-      overview: description,
+      executiveSummary: {
+        problemStatement: `解决用户需求: ${description}`,
+        proposedSolution: '通过构建自动化系统来满足需求',
+        successCriteria: ['功能按需求正常工作', '性能满足基本要求'],
+      },
+      userExperience: {
+        userPersonas: ['目标用户'],
+        userStories: [`作为用户，我希望${title}，以便提升工作效率`],
+        acceptanceCriteria: ['功能正常工作', '错误有合理处理'],
+        nonGoals: [],
+      },
+      aiSystemRequirements: {},
+      technicalSpecifications: {},
+      risksRoadmap: { phasedRollout: ['MVP'], technicalRisks: [] },
       features: [
         {
           id: 'F001',
           name: '核心功能',
-          description: `基于需求: ${description}`,
+          description: `基于需求: ${description}\n\n问答上下文:\n${qaContext}`,
           priority: 'high',
-          userStories: [
-            `作为用户，我希望 ${title}，以便提升工作效率。`,
-          ],
-          acceptanceCriteria: [
-            '功能按照需求描述正常工作',
-            '错误情况有合理的处理方式',
-          ],
+          userStories: [`作为用户，我希望${title}，以便提升工作效率`],
+          acceptanceCriteria: ['功能按需求正常工作'],
         },
       ],
-      nonFunctionalRequirements: [
-        '系统响应时间应小于2秒',
-        '数据持久化可靠',
-      ],
-      assumptions: [
-        'PRD为模板生成（LLM未配置），建议配置LLM以获得更精准的需求分析',
-      ],
+      nonFunctionalRequirements: ['系统响应时间应小于2秒', '数据持久化可靠'],
+      assumptions: ['PRD为模板生成（LLM未配置），建议配置LLM以获得更精准的需求分析'],
     };
   }
 
-  /**
-   * Fallback rework: preserve previous PRD structure and append revision notes.
-   */
   private reworkFallbackPRD(
     previousPrd: Record<string, unknown>,
     feedback: string,
+    qaContext: string,
   ): Record<string, unknown> {
     const prev = previousPrd as any;
     const existingAssumptions: string[] = prev.assumptions ?? [];
@@ -284,6 +471,7 @@ export class ProductDesignerAgent extends BaseAgent {
       assumptions: [
         ...existingAssumptions.filter((a: string) => !a.startsWith('已根据用户反馈修订')),
         `已根据用户反馈修订: ${feedback}`,
+        `问答上下文:\n${qaContext}`,
         'PRD修订为模板生成（LLM未配置），建议配置LLM以获得更精准的修订',
       ],
     };

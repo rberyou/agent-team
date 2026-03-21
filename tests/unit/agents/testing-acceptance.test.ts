@@ -33,6 +33,34 @@ import type { Event } from '../../../src/core/models/index.js';
 
 // --- Helpers ---
 
+async function answerDiscoveryQuestions(
+  eventBus: EventBus,
+  confirmations: Event[],
+  project: { projectId: string },
+): Promise<void> {
+  const discoveryConfirm = confirmations.find(
+    (c) => (c.payload as any).confirmationType === 'discovery_questions',
+  );
+  if (!discoveryConfirm) return;
+
+  const questions = (discoveryConfirm.payload as any).questions || [];
+  const answers: Record<string, string> = {};
+  for (const q of questions) {
+    answers[q.id] = 'Test answer for ' + q.id;
+  }
+
+  await eventBus.emit(
+    EventType.UserConfirmed,
+    project.projectId,
+    EventSource.User,
+    {
+      confirmationType: 'discovery_questions',
+      taskId: (discoveryConfirm.payload as any).taskId,
+      answers,
+    },
+  );
+}
+
 function createDisabledLLMService(): LLMService {
   const llmConfig: LLMConfig = {
     provider: 'openai-compatible',
@@ -834,7 +862,11 @@ describe('Full 5-Phase E2E: Analysis → Design → Implementation → Testing �
     const projects = await projectService.listProjects();
     const project = projects[0];
 
-    // Step 2: Confirm PRD
+    // Step 2: Answer discovery questions
+    await answerDiscoveryQuestions(eventBus, confirmations, project);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Step 3: Confirm PRD
     const prdConfirm = confirmations.find(
       (c) => (c.payload as any).confirmationType === 'prd_review',
     );
@@ -852,7 +884,7 @@ describe('Full 5-Phase E2E: Analysis → Design → Implementation → Testing �
 
     await new Promise((r) => setTimeout(r, 200));
 
-    // Step 3: Confirm design
+    // Step 4: Confirm design
     const designConfirm = confirmations.find(
       (c) => (c.payload as any).confirmationType === 'design_review',
     );
@@ -875,7 +907,7 @@ describe('Full 5-Phase E2E: Analysis → Design → Implementation → Testing �
     // QA generates test report
     await new Promise((r) => setTimeout(r, 400));
 
-    // Step 4: Confirm test report
+    // Step 5: Confirm test report
     const testConfirm = confirmations.find(
       (c) => (c.payload as any).confirmationType === 'test_review',
     );
@@ -894,7 +926,7 @@ describe('Full 5-Phase E2E: Analysis → Design → Implementation → Testing �
     // Testing confirmed → PM enters acceptance → DevOps deploys preview
     await new Promise((r) => setTimeout(r, 300));
 
-    // Step 5: Confirm acceptance trial (preview) → triggers DevOps production deployment
+    // Step 6: Confirm acceptance trial (preview) → triggers DevOps production deployment
     const trialConfirm = confirmations.find(
       (c) => (c.payload as any).confirmationType === 'acceptance_trial',
     );

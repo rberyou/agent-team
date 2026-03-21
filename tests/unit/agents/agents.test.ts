@@ -163,7 +163,7 @@ describe('Full MVP flow: PM + Product Designer', () => {
       { requirement: '我需要一个待办事项管理应用', projectName: 'Todo App' },
     );
 
-    // Wait for chain: PM creates project → creates task → PD produces PRD → PM asks for confirmation
+    // Wait for chain: PM creates project → creates task → PD produces discovery questions
     await new Promise((r) => setTimeout(r, 100));
 
     // Verify project was created and is active
@@ -173,18 +173,43 @@ describe('Full MVP flow: PM + Product Designer', () => {
     expect(project.status).toBe(ProjectStatus.Active);
     expect(project.currentPhase).toBe(PhaseName.Analysis);
 
+    // Step 2: Answer discovery questions
+    const discoveryConfirm = confirmations.find(
+      (c) => (c.payload as any).confirmationType === 'discovery_questions',
+    );
+    expect(discoveryConfirm).toBeTruthy();
+
+    const questions = (discoveryConfirm!.payload as any).questions || [];
+    const answers: Record<string, string> = {};
+    for (const q of questions) {
+      answers[q.id] = 'Test answer for ' + q.id;
+    }
+
+    await eventBus.emit(
+      EventType.UserConfirmed,
+      project.projectId,
+      EventSource.User,
+      {
+        confirmationType: 'discovery_questions',
+        taskId: (discoveryConfirm!.payload as any).taskId,
+        answers,
+      },
+    );
+
+    // Wait for PRD to be generated after answering questions
+    await new Promise((r) => setTimeout(r, 100));
+
     // Verify PRD was produced
     const prd = await artifactStore.load(project.projectId, 'analysis', 'prd.json');
     expect(prd).toBeTruthy();
 
     // Verify user confirmation was requested
-    expect(confirmations.length).toBeGreaterThanOrEqual(1);
     const prdConfirm = confirmations.find(
       (c) => (c.payload as any).confirmationType === 'prd_review',
     );
     expect(prdConfirm).toBeTruthy();
 
-    // Step 2: User confirms PRD
+    // Step 3: User confirms PRD
     await eventBus.emit(
       EventType.UserConfirmed,
       project.projectId,
@@ -224,11 +249,37 @@ describe('Full MVP flow: PM + Product Designer', () => {
     const projects = await projectService.listProjects();
     const project = projects[0];
 
-    // User rejects the PRD
+    // Step 2: Answer discovery questions first
+    const discoveryConfirm = confirmations.find(
+      (c) => (c.payload as any).confirmationType === 'discovery_questions',
+    );
+    expect(discoveryConfirm).toBeTruthy();
+
+    const questions = (discoveryConfirm!.payload as any).questions || [];
+    const answers: Record<string, string> = {};
+    for (const q of questions) {
+      answers[q.id] = 'Test answer for ' + q.id;
+    }
+
+    await eventBus.emit(
+      EventType.UserConfirmed,
+      project.projectId,
+      EventSource.User,
+      {
+        confirmationType: 'discovery_questions',
+        taskId: (discoveryConfirm!.payload as any).taskId,
+        answers,
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Now find the prd_review confirmation
     const prdConfirm = confirmations.find(
       (c) => (c.payload as any).confirmationType === 'prd_review',
     );
 
+    // User rejects the PRD
     await eventBus.emit(
       EventType.UserRejected,
       project.projectId,
@@ -337,7 +388,33 @@ describe('Full Design Phase flow: PM + ProductDesigner + Developer', () => {
     expect(projects).toHaveLength(1);
     const project = projects[0];
 
-    // Step 2: User confirms PRD
+    // Step 2: Answer discovery questions
+    const discoveryConfirm = confirmations.find(
+      (c) => (c.payload as any).confirmationType === 'discovery_questions',
+    );
+    expect(discoveryConfirm).toBeTruthy();
+
+    const questions = (discoveryConfirm!.payload as any).questions || [];
+    const answers: Record<string, string> = {};
+    for (const q of questions) {
+      answers[q.id] = 'Test answer for ' + q.id;
+    }
+
+    await eventBus.emit(
+      EventType.UserConfirmed,
+      project.projectId,
+      EventSource.User,
+      {
+        confirmationType: 'discovery_questions',
+        taskId: (discoveryConfirm!.payload as any).taskId,
+        answers,
+      },
+    );
+
+    // Wait for PRD to be generated
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Step 3: User confirms PRD
     const prdConfirm = confirmations.find(
       (c) => (c.payload as any).confirmationType === 'prd_review',
     );

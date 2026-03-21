@@ -58,6 +58,10 @@ export const EventType = {
   ChangeAnalyzed: 'change.analyzed',
   ChangeApproved: 'change.approved',
   ChangeApplied: 'change.applied',
+
+  // Product Designer Discovery events
+  ProductDesignerQuestions: 'product.designer.questions',
+  ProductDesignerAnswersReceived: 'product.designer.answers_received',
 } as const;
 
 export type EventType = (typeof EventType)[keyof typeof EventType];

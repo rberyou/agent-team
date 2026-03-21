@@ -51,6 +51,7 @@ export class PMAgent extends BaseAgent {
     this.on(EventType.UserRejected, (e) => this.handleUserRejected(e));
     this.on(EventType.ArtifactProduced, (e) => this.handleArtifactProduced(e));
     this.on(EventType.PhaseCompleted, (e) => this.handlePhaseCompleted(e));
+    this.on(EventType.ProductDesignerQuestions, (e) => this.handleProductDesignerQuestions(e));
     this.logger.info('PM Agent started');
   }
 
@@ -85,6 +86,35 @@ export class PMAgent extends BaseAgent {
       assignedTo: AgentRole.ProductDesigner,
       priority: 'high',
     });
+  }
+
+  /**
+   * Product Designer has discovery questions for the user → request user input.
+   */
+  private async handleProductDesignerQuestions(event: Event): Promise<void> {
+    const { taskId, questions, message } = event.payload as {
+      taskId: string;
+      questions: Array<{ id: string; text: string; category: string }>;
+      message: string;
+    };
+
+    this.logger.info({ taskId, questionCount: questions.length }, 'Product Designer has discovery questions');
+
+    await this.emit(
+      EventType.UserConfirmationNeeded,
+      event.projectId,
+      {
+        confirmationType: 'discovery_questions',
+        taskId,
+        message,
+        questions,
+      },
+      {
+        phase: PhaseName.Analysis,
+        correlationId: event.correlationId,
+        causationId: event.id,
+      },
+    );
   }
 
   /**
@@ -390,10 +420,32 @@ export class PMAgent extends BaseAgent {
    * User confirmed → complete current task and advance phase.
    */
   private async handleUserConfirmed(event: Event): Promise<void> {
-    const { confirmationType, taskId } = event.payload as {
+    const { confirmationType, taskId, answers } = event.payload as {
       confirmationType: string;
       taskId?: string;
+      answers?: Record<string, string>;
     };
+
+    if (confirmationType === 'discovery_questions') {
+      this.logger.info({ taskId, answerCount: answers ? Object.keys(answers).length : 0 }, 'User submitted discovery answers, forwarding to Product Designer');
+
+      if (answers && taskId) {
+        await this.emit(
+          EventType.ProductDesignerAnswersReceived,
+          event.projectId,
+          {
+            taskId,
+            answers,
+          },
+          {
+            phase: PhaseName.Analysis,
+            correlationId: event.correlationId,
+            causationId: event.id,
+          },
+        );
+      }
+      return;
+    }
 
     if (confirmationType === 'prd_review') {
       this.logger.info({ taskId }, 'User confirmed PRD, completing analysis phase');

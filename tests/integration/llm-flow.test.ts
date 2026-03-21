@@ -95,10 +95,30 @@ const disabledConfig: LLMConfig = {
   maxRetries: 3,
 };
 
+const VALID_DISCOVERY_QUESTIONS_JSON = JSON.stringify({
+  questions: [
+    { id: 'Q1', text: '为什么要现在做这个项目？', category: 'problem' },
+    { id: 'Q2', text: '如何衡量成功？', category: 'success' },
+    { id: 'Q3', text: '有什么技术约束？', category: 'constraints' },
+  ],
+});
+
 const VALID_PRD_JSON = JSON.stringify({
   title: 'Todo App PRD',
   version: '1.0',
-  overview: '一个功能完善的待办事项管理应用，帮助用户管理日常任务。',
+  executiveSummary: {
+    problemStatement: '用户需要一个待办事项管理应用',
+    proposedSolution: '开发一个 Web 应用来管理日常任务',
+    successCriteria: ['任务创建成功率 > 99%'],
+  },
+  userExperience: {
+    userPersonas: ['普通用户'],
+    userStories: ['作为用户，我希望创建新的待办事项以便追踪任务'],
+    acceptanceCriteria: ['用户可以输入标题和描述创建新任务', '任务可以被标记为已完成'],
+    nonGoals: [],
+  },
+  technicalSpecifications: {},
+  risksRoadmap: { phasedRollout: ['MVP'], technicalRisks: [] },
   features: [
     {
       id: 'F001',
@@ -196,9 +216,18 @@ afterEach(async () => {
 describe('LLM integration flow', () => {
   it('should generate PRD via LLM when enabled and provider succeeds', async () => {
     // Setup: LLM enabled with mock provider returning valid PRD JSON
-    const mockProvider = createMockProvider(makeResponse(VALID_PRD_JSON));
+    // First response is discovery questions, second is PRD
+    let callCount = 0;
+    const mockProvider = createMockProvider((request: any) => {
+      callCount++;
+      if (callCount === 1) {
+        return makeResponse(VALID_DISCOVERY_QUESTIONS_JSON);
+      }
+      return makeResponse(VALID_PRD_JSON);
+    });
     const promptLoader = createMockPromptLoader({
       'product-designer/system': 'You are a product designer. Output JSON.',
+      'product-designer/discovery-questions': 'Generate discovery questions for: {{title}} - {{description}}',
       'product-designer/generate-prd': 'Analyze: {{title}} - {{description}}',
     });
     const llmService = new LLMService(mockProvider, promptLoader, enabledConfig);
@@ -214,6 +243,24 @@ describe('LLM integration flow', () => {
     const events: Event[] = [];
     eventBus.subscribe(EventType.ArtifactProduced, (e) => events.push(e));
 
+    // Subscribe to discovery questions to answer them
+    const discoveryEvents: Event[] = [];
+    const unsub = eventBus.subscribe(EventType.ProductDesignerQuestions, async (e) => {
+      discoveryEvents.push(e);
+      // Answer the discovery questions
+      const questions = (e.payload as any).questions || [];
+      const answers: Record<string, string> = {};
+      for (const q of questions) {
+        answers[q.id] = 'Test answer';
+      }
+      await eventBus.emit(
+        EventType.ProductDesignerAnswersReceived,
+        project.projectId,
+        'agent:product_designer',
+        { taskId: (e.payload as any).taskId, answers },
+      );
+    });
+
     const task = await taskService.createTask({
       projectId: project.projectId,
       phase: PhaseName.Analysis,
@@ -222,7 +269,15 @@ describe('LLM integration flow', () => {
       assignedTo: 'product_designer',
     });
 
+    // Wait for discovery questions and answers
+    await new Promise((r) => setTimeout(r, 200));
+    unsub();
+
+    // Wait for PRD to be generated
     await new Promise((r) => setTimeout(r, 100));
+
+    // Verify discovery questions were asked
+    expect(discoveryEvents.length).toBe(1);
 
     // Verify artifact.produced was emitted
     expect(events).toHaveLength(1);
@@ -268,6 +323,24 @@ describe('LLM integration flow', () => {
     const events: Event[] = [];
     eventBus.subscribe(EventType.ArtifactProduced, (e) => events.push(e));
 
+    // Subscribe to discovery questions to answer them
+    const discoveryEvents: Event[] = [];
+    const unsub = eventBus.subscribe(EventType.ProductDesignerQuestions, async (e) => {
+      discoveryEvents.push(e);
+      // Answer the discovery questions with fallback
+      const questions = (e.payload as any).questions || [];
+      const answers: Record<string, string> = {};
+      for (const q of questions) {
+        answers[q.id] = 'Test answer';
+      }
+      await eventBus.emit(
+        EventType.ProductDesignerAnswersReceived,
+        project.projectId,
+        'agent:product_designer',
+        { taskId: (e.payload as any).taskId, answers },
+      );
+    });
+
     const task = await taskService.createTask({
       projectId: project.projectId,
       phase: PhaseName.Analysis,
@@ -276,7 +349,15 @@ describe('LLM integration flow', () => {
       assignedTo: 'product_designer',
     });
 
+    // Wait for discovery questions and answers
+    await new Promise((r) => setTimeout(r, 200));
+    unsub();
+
+    // Wait for PRD to be generated
     await new Promise((r) => setTimeout(r, 100));
+
+    // Verify discovery questions were asked
+    expect(discoveryEvents.length).toBe(1);
 
     // Verify artifact was produced
     expect(events).toHaveLength(1);

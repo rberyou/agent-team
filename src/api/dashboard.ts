@@ -655,6 +655,7 @@ const CONFIRM_LABELS = {
   test_review: 'Test Report Review',
   acceptance_review: 'Acceptance Review',
   deployment_review: 'Deployment Review',
+  discovery_questions: 'Discovery Questions',
 };
 
 // ---- WebSocket ----
@@ -730,6 +731,7 @@ function handleEvent(event) {
     const newConf = {
       confirmationType: event.payload.confirmationType,
       taskId: event.payload.taskId,
+      questions: event.payload.questions,
     };
     const exists = pendingConfirmations.some(
       c => c.confirmationType === newConf.confirmationType && c.taskId === newConf.taskId
@@ -955,8 +957,9 @@ async function refreshProject() {
   serverConfirmations.forEach(sc => {
     const confType = sc.payload.confirmationType;
     const taskId = sc.payload.taskId;
+    const questions = sc.payload.questions;
     if (!pendingConfirmations.some(c => c.confirmationType === confType && c.taskId === taskId)) {
-      pendingConfirmations.push({ confirmationType: confType, taskId });
+      pendingConfirmations.push({ confirmationType: confType, taskId, questions });
     }
   });
 
@@ -1139,16 +1142,32 @@ function showActionPanel() {
   
   document.getElementById('actionTitle').textContent = 'Action Required: ' + label;
 
-  if (pendingConfirmation.confirmationType === 'acceptance_trial' && currentProjectId) {
+  if (pendingConfirmation.confirmationType === 'discovery_questions' && pendingConfirmation.questions) {
+    const questions = pendingConfirmation.questions;
+    let questionsHtml = navHtml + '<p style="margin-bottom:12px">Please answer the following questions to help us understand your requirements better:</p>';
+    questionsHtml += '<div style="max-height:400px;overflow-y:auto;margin-bottom:16px">';
+    for (const q of questions) {
+      questionsHtml += '<div style="margin-bottom:12px;padding:10px;background:var(--bg-tertiary);border-radius:6px">';
+      questionsHtml += '<div style="font-weight:500;margin-bottom:6px;color:var(--accent-blue)">' + q.id + '. ' + esc(q.text) + '</div>';
+      questionsHtml += '<div style="color:var(--text-muted);font-size:11px;margin-bottom:6px">Category: ' + q.category + '</div>';
+      questionsHtml += '<textarea id="answer_' + q.id + '" rows="3" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:13px;resize:vertical" placeholder="Enter your answer..."></textarea>';
+      questionsHtml += '</div>';
+    }
+    questionsHtml += '</div>';
+    document.getElementById('actionDesc').innerHTML = questionsHtml;
+    document.getElementById('confirmBtn').textContent = 'Submit Answers';
+  } else if (pendingConfirmation.confirmationType === 'acceptance_trial' && currentProjectId) {
     const previewUrl = '/preview/' + currentProjectId + '/';
     document.getElementById('actionDesc').innerHTML =
       navHtml +
       '<p style="margin-bottom:10px">Preview environment is ready. Open the preview to try the project, then approve or reject.</p>'
       + '<a href="' + previewUrl + '" target="_blank" style="display:inline-block;padding:8px 16px;background:var(--accent-blue);color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px">Open Preview in Browser &rarr;</a>';
+    document.getElementById('confirmBtn').textContent = 'Approve';
   } else {
     document.getElementById('actionDesc').innerHTML =
       navHtml +
       'A ' + label.toLowerCase() + ' is waiting for your approval. Please review the artifacts and confirm or reject.';
+    document.getElementById('confirmBtn').textContent = 'Approve';
   }
   panel.classList.add('visible');
 }
@@ -1163,10 +1182,24 @@ async function confirmAction() {
   const btn = document.getElementById('confirmBtn');
   btn.disabled = true;
   try {
-    await apiPost('/api/projects/' + currentProjectId + '/confirm', {
-      confirmationType: pendingConfirmation.confirmationType,
-      taskId: pendingConfirmation.taskId,
-    });
+    if (pendingConfirmation.confirmationType === 'discovery_questions' && pendingConfirmation.questions) {
+      const answers = {};
+      for (const q of pendingConfirmation.questions) {
+        const textarea = document.getElementById('answer_' + q.id);
+        if (textarea) {
+          answers[q.id] = textarea.value.trim();
+        }
+      }
+      await apiPost('/api/projects/' + currentProjectId + '/answer', {
+        taskId: pendingConfirmation.taskId,
+        answers,
+      });
+    } else {
+      await apiPost('/api/projects/' + currentProjectId + '/confirm', {
+        confirmationType: pendingConfirmation.confirmationType,
+        taskId: pendingConfirmation.taskId,
+      });
+    }
     // Remove the confirmed one from the list
     pendingConfirmations.shift();
     if (pendingConfirmations.length === 0) {
@@ -1328,14 +1361,26 @@ function renderActivities() {
 }
 
 function loadCurrentActivities(inProgressTasks) {
-  currentActivities = inProgressTasks.map(t => ({
-    id: t.taskId,
-    taskId: t.taskId,
-    message: getTaskActivityMessage(t),
-    source: 'agent:' + t.assignedTo,
-    timestamp: t.startedAt || t.updatedAt,
-    type: 'in_progress',
-  }));
+  const now = Date.now();
+  const RECENT_THRESHOLD_MS = 60000;
+
+  for (const task of inProgressTasks) {
+    const hasRecentActivity = currentActivities.some(
+      a => a.taskId === task.taskId &&
+           now - new Date(a.timestamp).getTime() < RECENT_THRESHOLD_MS
+    );
+    if (!hasRecentActivity) {
+      currentActivities = currentActivities.filter(a => a.taskId !== task.taskId);
+      currentActivities.unshift({
+        id: task.taskId,
+        taskId: task.taskId,
+        message: getTaskActivityMessage(task),
+        source: 'agent:' + task.assignedTo,
+        timestamp: task.startedAt || task.updatedAt,
+        type: 'in_progress',
+      });
+    }
+  }
   renderActivities();
 }
 

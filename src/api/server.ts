@@ -244,6 +244,30 @@ export async function createApp(deps: AppDependencies) {
     return { message: 'Rejection processed', tasks };
   });
 
+  // POST /api/projects/:projectId/answer - User answers discovery questions
+  app.post<{
+    Params: { projectId: string };
+    Body: { answers: Record<string, string>; taskId: string };
+  }>('/api/projects/:projectId/answer', async (request, reply) => {
+    const { projectId } = request.params;
+    const { answers, taskId } = request.body;
+
+    if (!answers || !taskId) {
+      return reply.status(400).send({ error: 'answers and taskId are required' });
+    }
+
+    await eventBus.emit(
+      EventType.UserConfirmed,
+      projectId,
+      EventSource.User,
+      { confirmationType: 'discovery_questions', answers, taskId },
+    );
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    return { message: 'Answers received' };
+  });
+
   // --- Artifacts ---
 
   // GET /api/projects/:projectId/artifacts/:phase - List artifacts
